@@ -1,5 +1,6 @@
 import datetime
 import logging
+import os
 import sys
 import time
 from base64 import b64decode
@@ -14,14 +15,16 @@ from redash.utils import json_dumps, json_loads
 logger = logging.getLogger(__name__)
 
 try:
-    import apiclient.errors
-    from apiclient.discovery import build
-    from apiclient.errors import HttpError
+
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
     from oauth2client.service_account import ServiceAccountCredentials
 
     enabled = True
 except ImportError:
     enabled = False
+
+BIGQUERY_SCHEMA_PROJECT_ID = os.environ.get('BIGQUERY_SCHEMA_PROJECT_ID', None)
 
 types_map = {
     "INTEGER": TYPE_INTEGER,
@@ -261,9 +264,12 @@ class BigQuery(BaseQueryRunner):
         columns = []
         if column["type"] == "RECORD":
             for field in column["fields"]:
-                columns.append("{}.{}".format(column["name"], field["name"]))
+                columns.append("{}.{}".format(column["name"], field["name"] + " (" + field["type"] + ")"))
         else:
-            columns.append(column["name"])
+            c = column["name"] + " (" + column["type"] + ")"
+            if column.get("policyTags", None):
+                c = c + " <PII>"
+            columns.append(c)
 
         return columns
 
