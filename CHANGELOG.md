@@ -117,7 +117,7 @@ Following that, force a recreation of your containers with `docker-compose up --
 - Added “Last 12 months” option for dynamic date ranges
 
 ### Bug Fixes
-- Fix: Private addresses were not allowed even when enforcing was disabled 
+- Fix: Private addresses were not allowed even when enforcing was disabled
 - Fix: Python query runner wasn’t updated for Python 3
 - Fix: Sorting queries by schedule returned the wrong order
 - Fix: Counter visualization was enormous in some cases
