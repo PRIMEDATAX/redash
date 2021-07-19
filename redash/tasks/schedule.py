@@ -70,7 +70,7 @@ def periodic_job_definitions():
         {
             "func": refresh_schemas,
             "interval": timedelta(minutes=settings.SCHEMAS_REFRESH_SCHEDULE),
-        },      
+        },
         {
             "func": sync_user_details,
             "timeout": 60,
