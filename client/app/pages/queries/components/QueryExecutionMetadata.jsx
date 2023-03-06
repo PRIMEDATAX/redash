@@ -8,19 +8,19 @@ import useEmbedDialog from "../hooks/useEmbedDialog";
 import QueryControlDropdown from "@/components/EditVisualizationButton/QueryControlDropdown";
 import EditVisualizationButton from "@/components/EditVisualizationButton";
 import useQueryResultData from "@/lib/useQueryResultData";
-import { durationHumanize, pluralize, prettySize } from "@/lib/utils";
+import {durationHumanize, formatNumber, pluralize, prettySize} from "@/lib/utils";
 
 import "./QueryExecutionMetadata.less";
 
 export default function QueryExecutionMetadata({
-  query,
-  queryResult,
-  isQueryExecuting,
-  selectedVisualization,
-  showEditVisualizationButton,
-  onEditVisualization,
-  extraActions,
-}) {
+                                                 query,
+                                                 queryResult,
+                                                 isQueryExecuting,
+                                                 selectedVisualization,
+                                                 showEditVisualizationButton,
+                                                 onEditVisualization,
+                                                 extraActions,
+                                               }) {
   const queryResultData = useQueryResultData(queryResult);
   const openAddToDashboardDialog = useAddToDashboardDialog(query);
   const openEmbedDialog = useEmbedDialog(query);
@@ -40,7 +40,7 @@ export default function QueryExecutionMetadata({
       </span>
       {extraActions}
       {showEditVisualizationButton && (
-        <EditVisualizationButton openVisualizationEditor={onEditVisualization} selectedTab={selectedVisualization} />
+        <EditVisualizationButton openVisualizationEditor={onEditVisualization} selectedTab={selectedVisualization}/>
       )}
       <span className="m-l-5 m-r-10">
         <span>
@@ -52,7 +52,7 @@ export default function QueryExecutionMetadata({
                   queryResultData.rows.length +
                   " rows. Databricks may truncate query results that are unstably large."
                 }>
-                <WarningTwoTone twoToneColor="#FF9800" />
+                <WarningTwoTone twoToneColor="#FF9800"/>
               </Tooltip>
             </span>
           )}
@@ -69,8 +69,14 @@ export default function QueryExecutionMetadata({
         </span>
         {queryResultData.metadata.data_scanned && (
           <span className="m-l-5">
-            Data Scanned
+            Data Scanned:
             <strong>{prettySize(queryResultData.metadata.data_scanned)}</strong>
+          </span>
+        )}
+        {queryResultData.metadata.slots_used && (
+          <span className="m-l-5">
+            Slots used:
+            <strong>{formatNumber(queryResultData.metadata.slots_used)}</strong>
           </span>
         )}
       </span>
@@ -78,7 +84,7 @@ export default function QueryExecutionMetadata({
         <span className="m-r-10">
           <span className="hidden-xs">Refreshed </span>
           <strong>
-            <TimeAgo date={queryResultData.retrievedAt} placeholder="-" />
+            <TimeAgo date={queryResultData.retrievedAt} placeholder="-"/>
           </strong>
         </span>
       </div>
@@ -100,6 +106,7 @@ QueryExecutionMetadata.defaultProps = {
   isQueryExecuting: false,
   selectedVisualization: null,
   showEditVisualizationButton: false,
-  onEditVisualization: () => {},
+  onEditVisualization: () => {
+  },
   extraActions: null,
 };

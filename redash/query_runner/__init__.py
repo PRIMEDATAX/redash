@@ -15,7 +15,6 @@ from rq.timeouts import JobTimeoutException
 
 from redash.utils.requests_session import requests_or_advocate, requests_session, UnacceptableAddressException
 
-
 import sqlparse
 
 logger = logging.getLogger(__name__)
@@ -101,11 +100,24 @@ def split_sql_statements(query):
 def combine_sql_statements(queries):
     return ";\n".join(queries)
 
+
 def find_last_keyword_idx(parsed_query):
     for i in reversed(range(len(parsed_query.tokens))):
         if parsed_query.tokens[i].ttype in sqlparse.tokens.Keyword:
             return i
     return -1
+
+
+def find_first_keyword_idx(parsed_query):
+    for i in reversed(range(len(parsed_query.tokens))):
+        ttype = parsed_query.tokens[i].ttype
+        if (
+            ttype in sqlparse.tokens.Keyword.DML
+            or ttype in sqlparse.tokens.Keyword.DDL
+        ):
+            return i
+    return -1
+
 
 class InterruptException(Exception):
     pass
@@ -120,7 +132,7 @@ class BaseQueryRunner(object):
     should_annotate_query = True
     noop_query = None
     limit_query = " LIMIT 1000"
-    limit_keywords = [ "LIMIT", "OFFSET"]
+    limit_keywords = ["LIMIT", "OFFSET"]
 
     def __init__(self, configuration):
         self.syntax = "sql"
@@ -259,7 +271,7 @@ class BaseQueryRunner(object):
 
     @property
     def supports_auto_limit(self):
-        return False
+        return True
 
     def apply_auto_limit(self, query_text, should_apply_auto_limit):
         return query_text
@@ -292,25 +304,33 @@ class BaseSQLQueryRunner(BaseQueryRunner):
 
     def query_is_select_no_limit(self, query):
         parsed_query = sqlparse.parse(query)[0]
+        first_keyword_idx = find_first_keyword_idx(parsed_query)
         last_keyword_idx = find_last_keyword_idx(parsed_query)
         # Either invalid query or query that is not select
-        if last_keyword_idx == -1 or parsed_query.tokens[0].value.upper() != "SELECT":
+        if (
+            first_keyword_idx == -1
+            or last_keyword_idx == -1
+            or parsed_query.tokens[first_keyword_idx].value.upper() != "SELECT"
+        ):
             return False
-
-        no_limit = parsed_query.tokens[last_keyword_idx].value.upper() not in self.limit_keywords
-
-        return no_limit
+        return True
 
     def add_limit_to_query(self, query):
         parsed_query = sqlparse.parse(query)[0]
         limit_tokens = sqlparse.parse(self.limit_query)[0].tokens
         length = len(parsed_query.tokens)
-        if parsed_query.tokens[length - 1].ttype == sqlparse.tokens.Punctuation:
-            parsed_query.tokens[length - 1:length - 1] = limit_tokens
-        else:
-            parsed_query.tokens += limit_tokens
+        is_limit_keyword_present = False
+        if length > 3:
+            for index, token in enumerate(parsed_query.tokens[length - 4:length - 1]):
+                if token.is_keyword and token.value.lower() == 'limit':
+                    is_limit_keyword_present = True
+                    break
+        if not is_limit_keyword_present:
+            if parsed_query.tokens[length - 1].ttype == sqlparse.tokens.Punctuation:
+                parsed_query.tokens[length - 1:length - 1] = limit_tokens
+            else:
+                parsed_query.tokens += limit_tokens
         return str(parsed_query)
-
 
     def apply_auto_limit(self, query_text, should_apply_auto_limit):
         if should_apply_auto_limit:

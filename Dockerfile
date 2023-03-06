@@ -46,7 +46,6 @@ RUN apt-get update && \
     libffi-dev \
     sudo \
     git-core \
-    wget \
     # Postgres client
     libpq-dev \
     # ODBC support:
@@ -60,13 +59,6 @@ RUN apt-get update && \
     libsasl2-dev \
     unzip \
     libsasl2-modules-gssapi-mit && \
-  # MSSQL ODBC Driver:
-  curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - && \
-  curl https://packages.microsoft.com/config/debian/10/prod.list > /etc/apt/sources.list.d/mssql-release.list && \
-  apt-get update && \
-  ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
-  apt-get clean && \
-  rm -rf /var/lib/apt/lists/*
     apt-get clean && \
      rm -rf /var/lib/apt/lists/*
 
@@ -95,7 +87,8 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_NO_CACHE_DIR=1
 
 # rollback pip version to avoid legacy resolver problem
-RUN pip install pip==20.2.4;
+RUN pip install --upgrade pip==20.2.4;
+RUN pip install cmake
 
 # We first copy only the requirements file, to avoid rebuilding on every file change.
 COPY requirements_all_ds.txt ./

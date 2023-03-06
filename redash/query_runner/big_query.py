@@ -4,11 +4,16 @@ import os
 import sys
 import time
 from base64 import b64decode
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Set, Tuple
 
 import httplib2
 import requests
+from cachetools import cached, TTLCache
 
 from redash import settings
+from redash.models import User
 from redash.query_runner import *
 from redash.settings import parse_boolean
 from redash.utils import json_dumps, json_loads
@@ -25,7 +30,6 @@ try:
 except ImportError:
     enabled = False
 
-BIGQUERY_SCHEMA_PROJECT_ID = os.environ.get('BIGQUERY_SCHEMA_PROJECT_ID', None)
 ANNOTATE_QUERY = parse_boolean(os.environ.get("BIGQUERY_ANNOTATE_QUERY", "true"))
 
 types_map = {
@@ -69,11 +73,7 @@ def transform_row(row, fields):
 
 
 def _load_key(filename):
-    f = file(filename, "rb")
-    try:
-        return f.read()
-    finally:
-        f.close()
+    return Path(filename).read_text()
 
 
 def _get_query_results(jobs, project_id, location, job_id, start_index):
@@ -82,7 +82,7 @@ def _get_query_results(jobs, project_id, location, job_id, start_index):
     ).execute()
     logging.debug("query_reply %s", query_reply)
     if not query_reply["jobComplete"]:
-        time.sleep(10)
+        time.sleep(5)
         return _get_query_results(jobs, project_id, location, job_id, start_index)
 
     return query_reply
@@ -94,7 +94,15 @@ def _get_total_bytes_processed_for_resp(bq_response):
     return int(bq_response.get("totalBytesProcessed", "0"))
 
 
-class BigQuery(BaseQueryRunner):
+def _get_total_slots_for_resp(bq_response):
+    logger.debug(bq_response)
+    if "endTime" in bq_response:
+        return int(bq_response.get("totalSlotMs")) / (int(bq_response.get("finalExecutionDurationMs")))
+    else:
+        return 0
+
+
+class BigQuery(BaseSQLQueryRunner):
     should_annotate_query = ANNOTATE_QUERY
     noop_query = "SELECT 1"
 
@@ -124,6 +132,7 @@ class BigQuery(BaseQueryRunner):
                 },
                 "location": {"type": "string", "title": "Processing Location"},
                 "loadSchema": {"type": "boolean", "title": "Load Schema"},
+                "jobTimeoutMillis": {"type": "number", "title": "Job timeout in milliseconds", "default": 1800000},
                 "maximumBillingTier": {
                     "type": "number",
                     "title": "Maximum Billing Tier",
@@ -137,6 +146,7 @@ class BigQuery(BaseQueryRunner):
                 "useStandardSql",
                 "location",
                 "totalMBytesProcessedLimit",
+                "jobTimeoutMillis",
                 "maximumBillingTier",
                 "userDefinedFunctionResourceUri",
             ],
@@ -197,7 +207,35 @@ class BigQuery(BaseQueryRunner):
                 "maximumBillingTier"
             ] = self.configuration["maximumBillingTier"]
 
+        if "jobTimeoutMillis" in self.configuration:
+            job_data["configuration"]["jobTimeoutMs"] = self.configuration["jobTimeoutMillis"]
+
+        job_data["configuration"]["query"]["useQueryCache"] = False
+        job_data["configuration"]["query"]["priority"] = "BATCH"
         return job_data
+
+    def _get_columns_used_in_query(self, query_plan):
+        substeps = []
+        for input in query_plan:
+            for step in input["steps"]:
+                if step["kind"] == 'READ':
+                    for substep in step["substeps"]:
+                        if 'FROM' in substep and not substep.startswith("FROM __"):
+                            substeps.append(step["substeps"])
+
+        results = {}
+        for substep in substeps:
+            table_name = substep[1].split(" ")[-1]
+            if str(table_name) not in results:
+                results[str(table_name)] = set()
+            substep = substep[0].split(",")
+            for column in substep:
+                results[table_name].add(str(column.split(":")[-1]))
+        return results
+
+    @cached(cache=TTLCache(maxsize=3000, ttl=600))
+    def _get_policy_tags(self):
+        return {"table": ["c1", "c2"]}
 
     def _get_query_result(self, jobs, query):
         project_id = self._get_project_id()
@@ -214,6 +252,24 @@ class BigQuery(BaseQueryRunner):
         )
 
         logger.debug("bigquery replied: %s", query_reply)
+
+        job_stats = jobs.get(
+            **{"projectId": project_id, "jobId": self.current_job_id, "location": self._get_location()}).execute()
+        table_column_map: Dict[str, Set[str]] = self._get_columns_used_in_query(
+            job_stats["statistics"]["query"]["queryPlan"])
+        get_policy_tag_mapping: Dict[str, List[Tuple[str, str]]] = self._get_policy_tags()
+
+        results = defaultdict(set)
+        policy_tags_accessed = set()
+        for table_name, column_list in table_column_map.items():
+            if table_name in get_policy_tag_mapping:
+                for column, tag in get_policy_tag_mapping[table_name]:
+                    if column in column_list:
+                        results[table_name].add(column)
+                        policy_tags_accessed.add(tag)
+        if policy_tags_accessed:
+            # Check if user email has access
+            raise ValueError("PII")
 
         rows = []
 
@@ -245,35 +301,17 @@ class BigQuery(BaseQueryRunner):
             for f in query_reply["schema"]["fields"]
         ]
 
+        current_job_statistics = job_stats["statistics"]
+        logger.debug(current_job_statistics)
+
         data = {
             "columns": columns,
             "rows": rows,
-            "metadata": {"data_scanned": _get_total_bytes_processed_for_resp(query_reply)},
+            "metadata": {"data_scanned": _get_total_bytes_processed_for_resp(query_reply),
+                         "slots_used": _get_total_slots_for_resp(current_job_statistics)},
         }
 
         return data
-
-    def _get_columns_schema(self, table_data):
-        columns = []
-        for column in table_data.get("schema", {}).get("fields", []):
-            columns.extend(self._get_columns_schema_column(column))
-
-        project_id = self._get_project_id()
-        table_name = table_data["id"].replace("%s:" % project_id, "")
-        return {"name": table_name, "columns": columns}
-
-    def _get_columns_schema_column(self, column):
-        columns = []
-        if column["type"] == "RECORD":
-            for field in column["fields"]:
-                columns.append("{}.{}".format(column["name"], field["name"] + " (" + field["type"] + ")"))
-        else:
-            c = column["name"] + " (" + column["type"] + ")"
-            if column.get("policyTags", None):
-                c = c + " <PII>"
-            columns.append(c)
-
-        return columns
 
     def _get_project_datasets(self, project_id):
         result = []
@@ -291,23 +329,21 @@ class BigQuery(BaseQueryRunner):
         return result
 
     def get_schema(self, get_stats=False):
+        schema_project_id = os.getenv('BIGQUERY_SCHEMA_PROJECT_ID', self._get_project_id())
         if not self.configuration.get("loadSchema", False):
             return []
 
-        project_id = self._get_project_id()
-        datasets = self._get_project_datasets(project_id)
+        datasets = self._get_project_datasets(schema_project_id)
 
-        query_base = """
-        SELECT table_schema, table_name, column_name
-        FROM `{dataset_id}`.INFORMATION_SCHEMA.COLUMNS
-        WHERE table_schema NOT IN ('information_schema')
-        """
+        query_base = """SELECT table_schema, table_name, column_name, data_type FROM
+         `{schema_project_id}.{dataset_id}`.INFORMATION_SCHEMA.COLUMNS
+          WHERE table_schema NOT IN ('information_schema')"""
 
         schema = {}
         queries = []
         for dataset in datasets:
             dataset_id = dataset["datasetReference"]["datasetId"]
-            query = query_base.format(dataset_id=dataset_id)
+            query = query_base.format(schema_project_id=schema_project_id, dataset_id=dataset_id)
             queries.append(query)
 
         query = '\nUNION ALL\n'.join(queries)
@@ -320,11 +356,11 @@ class BigQuery(BaseQueryRunner):
             table_name = "{0}.{1}".format(row["table_schema"], row["table_name"])
             if table_name not in schema:
                 schema[table_name] = {"name": table_name, "columns": []}
-            schema[table_name]["columns"].append(row["column_name"])
+            schema[table_name]["columns"].append(f"{row['column_name']} ({row['data_type']})")
 
         return list(schema.values())
 
-    def run_query(self, query, user):
+    def run_query(self, query, user: User):
         logger.debug("BigQuery got query: %s", query)
 
         bigquery_service = self._get_bigquery_service()
@@ -347,7 +383,7 @@ class BigQuery(BaseQueryRunner):
             error = None
 
             json_data = json_dumps(data, ignore_nan=True)
-        except apiclient.errors.HttpError as e:
+        except HttpError as e:
             json_data = None
             if e.resp.status in [400, 404]:
                 error = json_loads(e.content)["error"]["message"]
