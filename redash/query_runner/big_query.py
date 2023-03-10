@@ -1,7 +1,6 @@
 import datetime
 import logging
 import os
-import sys
 import time
 from base64 import b64decode
 from collections import defaultdict
@@ -9,11 +8,11 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 import httplib2
-import requests
 from cachetools import cached, TTLCache
 
 from redash import settings
-from redash.models import User
+from redash.models import UserGroupMemberList, TableColumnPolicyTagMapping, QueryIdPolicyTagMapping
+# from redash.models import User, TableColumnPolicyTagMapping, UserGroupMemberList
 from redash.query_runner import *
 from redash.settings import parse_boolean
 from redash.utils import json_dumps, json_loads
@@ -235,9 +234,9 @@ class BigQuery(BaseSQLQueryRunner):
 
     @cached(cache=TTLCache(maxsize=3000, ttl=600))
     def _get_policy_tags(self):
-        return {"table": ["c1", "c2"]}
+        return TableColumnPolicyTagMapping.get_all()
 
-    def _get_query_result(self, jobs, query):
+    def _get_query_result(self, jobs, query, user):
         project_id = self._get_project_id()
         job_data = self._get_job_data(query)
         insert_response = jobs.insert(projectId=project_id, body=job_data).execute()
@@ -258,7 +257,7 @@ class BigQuery(BaseSQLQueryRunner):
         table_column_map: Dict[str, Set[str]] = self._get_columns_used_in_query(
             job_stats["statistics"]["query"]["queryPlan"])
         get_policy_tag_mapping: Dict[str, List[Tuple[str, str]]] = self._get_policy_tags()
-
+        logger.debug(get_policy_tag_mapping)
         results = defaultdict(set)
         policy_tags_accessed = set()
         for table_name, column_list in table_column_map.items():
@@ -269,8 +268,16 @@ class BigQuery(BaseSQLQueryRunner):
                         policy_tags_accessed.add(tag)
         if policy_tags_accessed:
             # Check if user email has access
-            raise ValueError("PII")
+            access = UserGroupMemberList.get_by_policy_name(policy_names=list(policy_tags_accessed),
+                                                            user_email=user.email)
+            if len(access) != len(policy_tags_accessed):
+                missing_access = policy_tags_accessed - set(access)
+                raise Exception(f"User does not have permission to query {missing_access}")
 
+        query_hash = self.gen_query_hash(query)
+        query_policy_tags = [QueryIdPolicyTagMapping(query_id=query_hash, policy_tag=tag) for tag in
+                             policy_tags_accessed]
+        QueryIdPolicyTagMapping.update_table(query_hash, query_policy_tags)
         rows = []
 
         while ("rows" in query_reply) and current_row < int(query_reply["totalRows"]):
@@ -360,7 +367,7 @@ class BigQuery(BaseSQLQueryRunner):
 
         return list(schema.values())
 
-    def run_query(self, query, user: User):
+    def run_query(self, query, user):
         logger.debug("BigQuery got query: %s", query)
 
         bigquery_service = self._get_bigquery_service()
@@ -379,7 +386,7 @@ class BigQuery(BaseSQLQueryRunner):
                         % (limitMB, processedMB),
                     )
 
-            data = self._get_query_result(jobs, query)
+            data = self._get_query_result(jobs, query, user)
             error = None
 
             json_data = json_dumps(data, ignore_nan=True)

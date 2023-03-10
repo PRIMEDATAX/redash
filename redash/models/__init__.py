@@ -3,13 +3,16 @@ import calendar
 import logging
 import time
 import numbers
+from typing import List
+
 import pytz
 
-from sqlalchemy import distinct, or_, and_, UniqueConstraint, cast
+from sqlalchemy import distinct, or_, and_, UniqueConstraint, ForeignKey
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.event import listens_for
 from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import backref, contains_eager, joinedload, subqueryload, load_only
+from sqlalchemy.orm import backref, contains_eager, joinedload, load_only
 from sqlalchemy.orm.exc import NoResultFound  # noqa: F401
 from sqlalchemy import func
 from sqlalchemy_utils import generic_relationship
@@ -27,9 +30,6 @@ from redash.query_runner import (
     with_ssh_tunnel,
     get_configuration_schema_for_query_runner_type,
     get_query_runner,
-    TYPE_BOOLEAN,
-    TYPE_DATE,
-    TYPE_DATETIME,
     BaseQueryRunner)
 from redash.utils import (
     generate_token,
@@ -48,7 +48,6 @@ from .mixins import BelongsToOrgMixin, TimestampMixin
 from .organizations import Organization
 from .types import (
     EncryptedConfiguration,
-    Configuration,
     MutableDict,
     MutableList,
     PseudoJSON,
@@ -80,6 +79,69 @@ class ScheduledQueriesExecutions(object):
 
 
 scheduled_queries_executions = ScheduledQueriesExecutions()
+
+
+class PolicyTag(db.Model):
+    policy_id = Column(db.String(100))
+    policy_name = Column(db.String(50), primary_key=True)
+    created_at = Column(db.DateTime(True), server_default=func.now())
+    updated_at = Column(db.DateTime(True), server_default=func.now(), onupdate=func.now())
+
+
+class QueryIdPolicyTagMapping(db.Model):
+    query_id = Column(db.String(100), primary_key=True)
+    policy_name = Column(db.String(50), ForeignKey(PolicyTag.policy_name), primary_key=True)
+    created_at = Column(db.DateTime(True), server_default=func.now())
+    updated_at = Column(db.DateTime(True), server_default=func.now(), onupdate=func.now())
+
+    @classmethod
+    def get_by_query_id(cls, query_id: int):
+        return cls.policy_name \
+            .filter(cls.query_id == query_id) \
+            .all()
+
+    @classmethod
+    def update_table(cls, query_hash, values):
+        QueryIdPolicyTagMapping.query.filter(QueryIdPolicyTagMapping.query_id == query_hash).delete()
+        db.session.add_all(values)
+        db.session.commit()
+
+
+class UserGroupMemberList(db.Model):
+    user_emails = Column(ARRAY(db.String))
+    policy_name = Column(db.String(50), ForeignKey(PolicyTag.policy_name), primary_key=True)
+    created_at = Column(db.DateTime(True), server_default=func.now())
+    updated_at = Column(db.DateTime(True), server_default=func.now(), onupdate=func.now())
+
+    @classmethod
+    def get_by_policy_name(cls, policy_names: List[str], user_email: str):
+        return cls.policy_name \
+            .filter(cls.policy_name.in_(policy_names)) \
+            .filter(cls.user_emails.any(user_email)) \
+            .one()
+
+
+class TableColumnPolicyTagMapping(db.Model):
+    project_id = Column(db.String(50), primary_key=True)
+    dataset_id = Column(db.String(50), primary_key=True)
+    table_name = Column(db.String(100), primary_key=True)
+    policy_tag = Column(db.String(50), ForeignKey(PolicyTag.policy_name))
+    column_name = Column(db.String(50), primary_key=True)
+    created_at = Column(db.DateTime(True), server_default=func.now())
+    updated_at = Column(db.DateTime(True), server_default=func.now(), onupdate=func.now())
+
+    @classmethod
+    def get_policy_name(cls, project_name: str, dataset_id: str, table_name: str, column_name: str):
+        return cls.policy_tag \
+            .filter(cls.project_id == project_name) \
+            .filter(cls.dataset_id == dataset_id) \
+            .filter(cls.table_name == table_name) \
+            .filter(cls.column_name == column_name) \
+            .one()
+
+    @classmethod
+    def get_all(cls):
+        return db.session.query(TableColumnPolicyTagMapping)
 
 
 @generic_repr("id", "name", "type", "org_id", "created_at")
@@ -625,10 +687,10 @@ class Query(ChangeTrackingMixin, TimestampMixin, BelongsToOrgMixin, db.Model):
             query
             for query in queries
             if query.schedule["until"] is not None
-            and pytz.utc.localize(
+               and pytz.utc.localize(
                 datetime.datetime.strptime(query.schedule["until"], "%Y-%m-%d")
             )
-            <= now
+               <= now
         ]
 
     @classmethod
@@ -736,11 +798,11 @@ class Query(ChangeTrackingMixin, TimestampMixin, BelongsToOrgMixin, db.Model):
                 Event.action.in_(
                     ["edit", "execute", "edit_name", "edit_description", "view_source"]
                 ),
-                Event.object_id != None,
+                Event.object_id is not None,
                 Event.object_type == "query",
                 DataSourceGroup.group_id.in_(group_ids),
-                or_(Query.is_draft == False, Query.user_id == user_id),
-                Query.is_archived == False,
+                or_(Query.is_draft is False, Query.user_id == user_id),
+                Query.is_archived is False,
             )
             .group_by(Event.object_id, Query.id)
             .order_by(db.desc(db.func.count(0)))
@@ -1128,7 +1190,7 @@ class Dashboard(ChangeTrackingMixin, TimestampMixin, BelongsToOrgMixin, db.Model
                 DataSourceGroup, Query.data_source_id == DataSourceGroup.data_source_id
             )
             .filter(
-                Dashboard.is_archived == False,
+                Dashboard.is_archived is False,
                 (
                     DataSourceGroup.group_id.in_(group_ids)
                     | (Dashboard.user_id == user_id)
@@ -1138,7 +1200,7 @@ class Dashboard(ChangeTrackingMixin, TimestampMixin, BelongsToOrgMixin, db.Model
         )
 
         query = query.filter(
-            or_(Dashboard.user_id == user_id, Dashboard.is_draft == False)
+            or_(Dashboard.user_id == user_id, Dashboard.is_draft is False)
         )
 
         return query
@@ -1335,14 +1397,14 @@ class ApiKey(TimestampMixin, GFKBase, db.Model):
 
     @classmethod
     def get_by_api_key(cls, api_key):
-        return cls.query.filter(cls.api_key == api_key, cls.active == True).one()
+        return cls.query.filter(cls.api_key == api_key, cls.active is True).one()
 
     @classmethod
     def get_by_object(cls, object):
         return cls.query.filter(
             cls.object_type == object.__class__.__tablename__,
             cls.object_id == object.id,
-            cls.active == True,
+            cls.active is True,
         ).first()
 
     @classmethod
