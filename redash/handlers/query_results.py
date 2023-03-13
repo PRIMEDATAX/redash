@@ -2,12 +2,15 @@ import logging
 import time
 
 import unicodedata
+from typing import List
+
 from flask import make_response, request
 from flask_login import current_user
 from flask_restful import abort
 from werkzeug.urls import url_quote
 from redash import models, settings
 from redash.handlers.base import BaseResource, get_object_or_404, record_event
+from redash.models import UserGroupMemberList
 from redash.permissions import (
     has_access,
     not_view_only,
@@ -36,6 +39,7 @@ from redash.serializers import (
     serialize_query_result_to_xlsx,
     serialize_job,
 )
+from redash.utils.permission_denied_exception import PermissionDeniedException
 
 
 def error_response(message, http_status=400):
@@ -319,6 +323,18 @@ class QueryResultResource(BaseResource):
             else:
                 return error_messages["no_permission"]
 
+    def check_for_policy_tag_permissions(self, query_hash: str):
+        query_policy_tags: List[str] = get_object_or_404(models.QueryIdPolicyTagMapping.get_by_query_id,
+                                                         query_hash
+                                                         )
+        if query_policy_tags:
+            access: List[str] = UserGroupMemberList.get_by_policy_name(policy_names=list(query_policy_tags),
+                                                                       user_email=self.current_user.email)
+            if len(access) != len(query_policy_tags):
+                missing_access_policy_tags = set(query_policy_tags) - set(access)
+                abort(400,
+                      message=f"User {self.current_user.email} does not have permission to query {missing_access_policy_tags}")
+
     @require_any_of_permission(("view_query", "execute_query"))
     def get(self, query_id=None, query_result_id=None, filetype="json"):
         """
@@ -349,11 +365,13 @@ class QueryResultResource(BaseResource):
             query_result = get_object_or_404(
                 models.QueryResult.get_by_id_and_org, query_result_id, self.current_org
             )
+            self.check_for_policy_tag_permissions(query_result.query_hash)
 
         if query_id is not None:
             query = get_object_or_404(
                 models.Query.get_by_id_and_org, query_id, self.current_org
             )
+            self.check_for_policy_tag_permissions(query.query_hash)
 
             if (
                 query_result is None

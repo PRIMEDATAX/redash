@@ -16,7 +16,7 @@ class TestCheckAlertsForQuery(BaseTestCase):
         Alert.evaluate = MagicMock(return_value=Alert.TRIGGERED_STATE)
 
         alert = self.factory.create_alert()
-        check_alerts_for_query(alert.query_id)
+        check_alerts_for_query(alert.query_hash)
 
         self.assertTrue(redash.tasks.alerts.notify_subscriptions.called)
 
@@ -25,7 +25,7 @@ class TestCheckAlertsForQuery(BaseTestCase):
         Alert.evaluate = MagicMock(return_value=Alert.OK_STATE)
 
         alert = self.factory.create_alert()
-        check_alerts_for_query(alert.query_id)
+        check_alerts_for_query(alert.query_hash)
 
         self.assertFalse(redash.tasks.alerts.notify_subscriptions.called)
 
@@ -34,7 +34,7 @@ class TestCheckAlertsForQuery(BaseTestCase):
         Alert.evaluate = MagicMock(return_value=Alert.TRIGGERED_STATE)
 
         alert = self.factory.create_alert(options={"muted": True})
-        check_alerts_for_query(alert.query_id)
+        check_alerts_for_query(alert.query_hash)
 
         self.assertFalse(redash.tasks.alerts.notify_subscriptions.called)
 

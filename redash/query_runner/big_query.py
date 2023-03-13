@@ -16,6 +16,7 @@ from redash.models import UserGroupMemberList, TableColumnPolicyTagMapping, Quer
 from redash.query_runner import *
 from redash.settings import parse_boolean
 from redash.utils import json_dumps, json_loads
+from redash.utils.permission_denied_exception import PermissionDeniedException
 
 logger = logging.getLogger(__name__)
 
@@ -233,8 +234,13 @@ class BigQuery(BaseSQLQueryRunner):
         return results
 
     @cached(cache=TTLCache(maxsize=3000, ttl=600))
-    def _get_policy_tags(self):
-        return TableColumnPolicyTagMapping.get_all()
+    def _get_policy_tags(self) -> Dict[str, List[Tuple[str, str]]]:
+        all_policy_tag_mappings: List[TableColumnPolicyTagMapping] = TableColumnPolicyTagMapping.get_all()
+        grouped_map = defaultdict(list)
+        for policy_tags in all_policy_tag_mappings:
+            policy_tag_table_name = f"{policy_tags.project_id}.{policy_tags.dataset_id}.{policy_tags.table_name}"
+            grouped_map[policy_tag_table_name].append((policy_tags.column_name, policy_tags.policy_tag))
+        return grouped_map
 
     def _get_query_result(self, jobs, query, user):
         project_id = self._get_project_id()
@@ -256,28 +262,13 @@ class BigQuery(BaseSQLQueryRunner):
             **{"projectId": project_id, "jobId": self.current_job_id, "location": self._get_location()}).execute()
         table_column_map: Dict[str, Set[str]] = self._get_columns_used_in_query(
             job_stats["statistics"]["query"]["queryPlan"])
-        get_policy_tag_mapping: Dict[str, List[Tuple[str, str]]] = self._get_policy_tags()
-        logger.debug(get_policy_tag_mapping)
-        results = defaultdict(set)
-        policy_tags_accessed = set()
-        for table_name, column_list in table_column_map.items():
-            if table_name in get_policy_tag_mapping:
-                for column, tag in get_policy_tag_mapping[table_name]:
-                    if column in column_list:
-                        results[table_name].add(column)
-                        policy_tags_accessed.add(tag)
-        if policy_tags_accessed:
-            # Check if user email has access
-            access = UserGroupMemberList.get_by_policy_name(policy_names=list(policy_tags_accessed),
-                                                            user_email=user.email)
-            if len(access) != len(policy_tags_accessed):
-                missing_access = policy_tags_accessed - set(access)
-                raise Exception(f"User does not have permission to query {missing_access}")
+        get_policy_tag_mapping: Dict[str, Tuple[str, str]] = self._get_policy_tags()
+        policy_tags_accessed = self.get_policy_tags_in_query(get_policy_tag_mapping, table_column_map)
 
-        query_hash = self.gen_query_hash(query)
-        query_policy_tags = [QueryIdPolicyTagMapping(query_id=query_hash, policy_tag=tag) for tag in
-                             policy_tags_accessed]
-        QueryIdPolicyTagMapping.update_table(query_hash, query_policy_tags)
+        self.update_query_policy_tags(policy_tags_accessed, query)
+
+        self._check_for_policy_tags_in_query(policy_tags_accessed, user)
+
         rows = []
 
         while ("rows" in query_reply) and current_row < int(query_reply["totalRows"]):
@@ -319,6 +310,35 @@ class BigQuery(BaseSQLQueryRunner):
         }
 
         return data
+
+    def _check_for_policy_tags_in_query(self, policy_tags_accessed, user):
+        if policy_tags_accessed:
+            # Check if user email has access
+            access: List[str] = UserGroupMemberList.get_by_policy_name(policy_names=list(policy_tags_accessed.keys()),
+                                                                       user_email=user.email)
+            if len(access) != len(policy_tags_accessed):
+                missing_access_policy_tags = set(policy_tags_accessed.keys()) - set(access)
+                filtered_results: dict = {k: v for k, v in policy_tags_accessed.items() if
+                                          k in missing_access_policy_tags}
+                f = [f"Policy tag- {k}, Columns accessed- {v}" for k, v in filtered_results.items()]
+
+                raise PermissionDeniedException(
+                    "User does not have permission to query columns. \n{} ".format('\n'.join(f)))
+
+    def update_query_policy_tags(self, policy_tags_accessed, query):
+        query_hash = self.gen_query_hash(query)
+        query_policy_tags = [QueryIdPolicyTagMapping(query_id=query_hash, policy_name=tag) for tag in
+                             policy_tags_accessed.keys()]
+        QueryIdPolicyTagMapping.update_table(query_hash, query_policy_tags)
+
+    def get_policy_tags_in_query(self, get_policy_tag_mapping, table_column_map):
+        policy_tags_accessed = defaultdict(set)
+        for table_name, column_list in table_column_map.items():
+            if table_name in get_policy_tag_mapping.keys():
+                for column, tag in get_policy_tag_mapping[table_name]:
+                    if column in column_list:
+                        policy_tags_accessed[tag].add((table_name, column))
+        return policy_tags_accessed
 
     def _get_project_datasets(self, project_id):
         result = []

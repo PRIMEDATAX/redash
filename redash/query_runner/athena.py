@@ -245,7 +245,7 @@ class Athena(BaseQueryRunner):
             except AttributeError as e:
                 logger.debug("Athena Upstream can't get data_scanned_in_bytes: %s", e)
             try:
-                athena_query_id = cursor.query_id
+                athena_query_id = cursor.query_hash
             except AttributeError as e:
                 logger.debug("Athena Upstream can't get query_id: %s", e)
 
@@ -263,7 +263,7 @@ class Athena(BaseQueryRunner):
             json_data = json_dumps(data, ignore_nan=True)
             error = None
         except Exception:
-            if cursor.query_id:
+            if cursor.query_hash:
                 cursor.cancel()
             raise
 

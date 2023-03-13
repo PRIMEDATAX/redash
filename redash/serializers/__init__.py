@@ -209,7 +209,7 @@ def serialize_alert(alert, full=True):
         d["query"] = serialize_query(alert.query_rel)
         d["user"] = alert.user.to_dict()
     else:
-        d["query_id"] = alert.query_id
+        d["query_id"] = alert.query_hash
         d["user_id"] = alert.user_id
 
     return d

@@ -89,20 +89,21 @@ class PolicyTag(db.Model):
 
 
 class QueryIdPolicyTagMapping(db.Model):
-    query_id = Column(db.String(100), primary_key=True)
+    query_hash = Column(db.String(100), primary_key=True)
     policy_name = Column(db.String(50), ForeignKey(PolicyTag.policy_name), primary_key=True)
-    created_at = Column(db.DateTime(True), server_default=func.now())
+    created_at = Column(db.DateTime(True), server_default=func.now(), index=True)
     updated_at = Column(db.DateTime(True), server_default=func.now(), onupdate=func.now())
 
     @classmethod
-    def get_by_query_id(cls, query_id: int):
-        return cls.policy_name \
-            .filter(cls.query_id == query_id) \
+    def get_by_query_id(cls, query_id: str):
+        return db.session.query(QueryIdPolicyTagMapping.policy_name) \
+            .filter(QueryIdPolicyTagMapping.query_hash == query_id)\
+            .distinct()\
             .all()
 
     @classmethod
     def update_table(cls, query_hash, values):
-        QueryIdPolicyTagMapping.query.filter(QueryIdPolicyTagMapping.query_id == query_hash).delete()
+        QueryIdPolicyTagMapping.query.filter(QueryIdPolicyTagMapping.query_hash == query_hash).delete()
         db.session.add_all(values)
         db.session.commit()
 
@@ -115,10 +116,10 @@ class UserGroupMemberList(db.Model):
 
     @classmethod
     def get_by_policy_name(cls, policy_names: List[str], user_email: str):
-        return cls.policy_name \
-            .filter(cls.policy_name.in_(policy_names)) \
-            .filter(cls.user_emails.any(user_email)) \
-            .one()
+        return db.session.query(UserGroupMemberList.policy_name) \
+            .filter(UserGroupMemberList.policy_name.in_(policy_names)) \
+            .filter(UserGroupMemberList.user_emails.any(user_email)) \
+            .all()
 
 
 class TableColumnPolicyTagMapping(db.Model):
@@ -141,7 +142,7 @@ class TableColumnPolicyTagMapping(db.Model):
 
     @classmethod
     def get_all(cls):
-        return db.session.query(TableColumnPolicyTagMapping)
+        return db.session.query(TableColumnPolicyTagMapping).all()
 
 
 @generic_repr("id", "name", "type", "org_id", "created_at")
