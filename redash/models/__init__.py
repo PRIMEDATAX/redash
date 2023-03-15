@@ -82,7 +82,6 @@ scheduled_queries_executions = ScheduledQueriesExecutions()
 
 
 class PolicyTag(db.Model):
-    policy_id = Column(db.String(100))
     policy_name = Column(db.String(50), primary_key=True)
     created_at = Column(db.DateTime(True), server_default=func.now())
     updated_at = Column(db.DateTime(True), server_default=func.now(), onupdate=func.now())

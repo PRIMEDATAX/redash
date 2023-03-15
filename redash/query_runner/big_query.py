@@ -265,7 +265,7 @@ class BigQuery(BaseSQLQueryRunner):
         get_policy_tag_mapping: Dict[str, Tuple[str, str]] = self._get_policy_tags()
         policy_tags_accessed = self.get_policy_tags_in_query(get_policy_tag_mapping, table_column_map)
 
-        self.update_query_policy_tags(policy_tags_accessed, query)
+        self._update_query_policy_tags(policy_tags_accessed, query)
 
         self._check_for_policy_tags_in_query(policy_tags_accessed, user)
 
@@ -314,10 +314,11 @@ class BigQuery(BaseSQLQueryRunner):
     def _check_for_policy_tags_in_query(self, policy_tags_accessed, user):
         if policy_tags_accessed:
             # Check if user email has access
-            access: List[str] = UserGroupMemberList.get_by_policy_name(policy_names=list(policy_tags_accessed.keys()),
+            access_results: List[Tuple[str]] = UserGroupMemberList.get_by_policy_name(policy_names=list(policy_tags_accessed.keys()),
                                                                        user_email=user.email)
+            access = {a[0] for a in access_results}
             if len(access) != len(policy_tags_accessed):
-                missing_access_policy_tags = set(policy_tags_accessed.keys()) - set(access)
+                missing_access_policy_tags = set(policy_tags_accessed.keys()) - access
                 filtered_results: dict = {k: v for k, v in policy_tags_accessed.items() if
                                           k in missing_access_policy_tags}
                 f = [f"Policy tag- {k}, Columns accessed- {v}" for k, v in filtered_results.items()]
@@ -325,9 +326,9 @@ class BigQuery(BaseSQLQueryRunner):
                 raise PermissionDeniedException(
                     "User does not have permission to query columns. \n{} ".format('\n'.join(f)))
 
-    def update_query_policy_tags(self, policy_tags_accessed, query):
+    def _update_query_policy_tags(self, policy_tags_accessed, query):
         query_hash = self.gen_query_hash(query)
-        query_policy_tags = [QueryIdPolicyTagMapping(query_id=query_hash, policy_name=tag) for tag in
+        query_policy_tags = [QueryIdPolicyTagMapping(query_hash=query_hash, policy_name=tag) for tag in
                              policy_tags_accessed.keys()]
         QueryIdPolicyTagMapping.update_table(query_hash, query_policy_tags)
 
@@ -372,8 +373,9 @@ class BigQuery(BaseSQLQueryRunner):
             dataset_id = dataset["datasetReference"]["datasetId"]
             query = query_base.format(schema_project_id=schema_project_id, dataset_id=dataset_id)
             queries.append(query)
-
+        logger.debug(datasets)
         query = '\nUNION ALL\n'.join(queries)
+        logger.debug(queries)
         results, error = self.run_query(query, None)
         if error is not None:
             self._handle_run_query_error(error)
