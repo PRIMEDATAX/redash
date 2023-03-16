@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.3
 FROM node:14.17 as frontend-builder
 
 RUN npm install --global --force yarn@1.22.10

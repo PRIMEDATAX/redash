@@ -1,0 +1,43 @@
+name: Build custom redash image
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  deploy:
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    environment:
+      name: Prod
+      url: "app.{{ vars.BASE_DOMAIN }}"
+    runs-on: ubuntu-latest
+    env:
+      IMAGE_NAME: asia-south1-python.pkg.dev/prod-data-platform/redash
+
+    steps:
+      - uses: actions/checkout@v3
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: 'projects/1027534050611/locations/global/workloadIdentityPools/github-pool/providers/github'
+          service_account: 'prod-data-eng-deployment@prod-data-platform.iam.gserviceaccount.com'
+          token_format: 'access_token'
+
+      - uses: olegtarasov/get-tag@v2.1
+        id: tag_name
+
+      - # Add support for more platforms with QEMU (optional)
+        # https://github.com/docker/setup-qemu-action
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        platforms: linux/amd64,linux/arm64
+
+      - name: Build & push custom image
+        run: DOCKER_BUILDKIT=1 docker buildx build -t ${{ vars.IMAGE_NAME }}:${{ steps.tag_name.outputs.tag }} . --push
