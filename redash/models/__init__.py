@@ -89,7 +89,7 @@ class PolicyTag(db.Model):
 
 class QueryIdPolicyTagMapping(db.Model):
     query_hash = Column(db.String(100), primary_key=True)
-    policy_name = Column(db.String(50), ForeignKey(PolicyTag.policy_name), primary_key=True)
+    policy_name = Column(db.String(50), primary_key=True)
     created_at = Column(db.DateTime(True), server_default=func.now(), index=True)
     updated_at = Column(db.DateTime(True), server_default=func.now(), onupdate=func.now())
 
@@ -109,7 +109,7 @@ class QueryIdPolicyTagMapping(db.Model):
 
 class UserGroupMemberList(db.Model):
     user_emails = Column(ARRAY(db.String))
-    policy_name = Column(db.String(50), ForeignKey(PolicyTag.policy_name), primary_key=True)
+    policy_name = Column(db.String(50), primary_key=True)
     created_at = Column(db.DateTime(True), server_default=func.now())
     updated_at = Column(db.DateTime(True), server_default=func.now(), onupdate=func.now())
 
@@ -125,7 +125,7 @@ class TableColumnPolicyTagMapping(db.Model):
     project_id = Column(db.String(50), primary_key=True)
     dataset_id = Column(db.String(50), primary_key=True)
     table_name = Column(db.String(100), primary_key=True)
-    policy_tag = Column(db.String(50), ForeignKey(PolicyTag.policy_name))
+    policy_tag = Column(db.String(50))
     column_name = Column(db.String(50), primary_key=True)
     created_at = Column(db.DateTime(True), server_default=func.now())
     updated_at = Column(db.DateTime(True), server_default=func.now(), onupdate=func.now())

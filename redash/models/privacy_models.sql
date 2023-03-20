@@ -43,14 +43,6 @@ CREATE INDEX ix_query_id_policy_tag_mapping_created_at ON public.query_id_policy
 
 
 --
--- Name: query_id_policy_tag_mapping query_id_policy_tag_mapping_policy_name_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.query_id_policy_tag_mapping
-    ADD CONSTRAINT query_id_policy_tag_mapping_policy_name_fkey FOREIGN KEY (policy_name) REFERENCES public.policy_tag(policy_name);
-
-
---
 -- Name: table_column_policy_tag_mapping; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -72,13 +64,6 @@ ALTER TABLE ONLY public.table_column_policy_tag_mapping
     ADD CONSTRAINT table_column_policy_tag_mapping_pkey PRIMARY KEY (project_id, dataset_id, table_name, column_name);
 
 
---
--- Name: table_column_policy_tag_mapping table_column_policy_tag_mapping_policy_tag_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.table_column_policy_tag_mapping
-    ADD CONSTRAINT table_column_policy_tag_mapping_policy_tag_fkey FOREIGN KEY (policy_tag) REFERENCES public.policy_tag(policy_name);
-
 
 --
 -- Name: user_group_member_list; Type: TABLE; Schema: public; Owner: postgres
@@ -98,12 +83,3 @@ CREATE TABLE public.user_group_member_list (
 
 ALTER TABLE ONLY public.user_group_member_list
     ADD CONSTRAINT user_group_member_list_pkey PRIMARY KEY (policy_name);
-
-
---
--- Name: user_group_member_list user_group_member_list_policy_name_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
---
-
-ALTER TABLE ONLY public.user_group_member_list
-    ADD CONSTRAINT user_group_member_list_policy_name_fkey FOREIGN KEY (policy_name) REFERENCES public.policy_tag(policy_name);
-
