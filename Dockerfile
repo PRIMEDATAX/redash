@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.3
-FROM node:14.17 as frontend-builder
+FROM node:19 as frontend-builder
 
 RUN npm install --global --force yarn@1.22.10
 
@@ -19,6 +19,8 @@ COPY --chown=redash viz-lib /frontend/viz-lib
 # Controls whether to instrument code for coverage information
 ARG code_coverage
 ENV BABEL_ENV=${code_coverage:+test}
+
+ENV NODE_OPTIONS=--openssl-legacy-provider
 
 RUN if [ "x$skip_frontend_build" = "x" ] ; then yarn --frozen-lockfile --network-concurrency 1; fi
 

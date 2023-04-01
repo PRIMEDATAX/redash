@@ -15,7 +15,7 @@ jobs:
       url: "app.{{ vars.BASE_DOMAIN }}"
     runs-on: ubuntu-latest
     env:
-      IMAGE_NAME: asia-south1-python.pkg.dev/prod-data-platform/redash
+      IMAGE_NAME: asia-south1-python.pkg.dev/prod-data-platform/redash/redash
 
     steps:
       - uses: actions/checkout@v3
@@ -39,5 +39,12 @@ jobs:
         uses: docker/setup-buildx-action@v2
         platforms: linux/amd64,linux/arm64
 
-      - name: Build & push custom image
-        run: DOCKER_BUILDKIT=1 docker buildx build -t ${{ vars.IMAGE_NAME }}:${{ steps.tag_name.outputs.tag }} . --push
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: "${{ vars.IMAGE_NAME }}:${{ steps.tag_name.outputs.tag }}"
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
