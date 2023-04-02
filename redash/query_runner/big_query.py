@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 import os
 import time
@@ -8,15 +9,19 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 import httplib2
+import requests
+import google.auth.transport.requests
+import google.oauth2.id_token
 from cachetools import cached, TTLCache
 
 from redash import settings
 from redash.models import UserGroupMemberList, TableColumnPolicyTagMapping, QueryIdPolicyTagMapping
-# from redash.models import User, TableColumnPolicyTagMapping, UserGroupMemberList
 from redash.query_runner import *
 from redash.settings import parse_boolean
 from redash.utils import json_dumps, json_loads
 from redash.utils.permission_denied_exception import PermissionDeniedException
+
+BIGQUERY_PARSER_URL = os.getenv("REDASH_BIGQUERY_PARSER_URL", False)
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +247,41 @@ class BigQuery(BaseSQLQueryRunner):
             grouped_map[policy_tag_table_name].append((policy_tags.column_name, policy_tags.policy_tag))
         return grouped_map
 
+    def get_cloud_function_token(self, audience):
+        """
+        make_authorized_get_request makes a GET request to the specified HTTP endpoint
+        by authenticating with the ID token obtained from the google-auth client library
+        using the specified audience value.
+        """
+
+        # Cloud Functions uses your function's URL as the `audience` value
+        # audience = https://project-region-projectid.cloudfunctions.net/myFunction
+        # For Cloud Functions, `endpoint` and `audience` should be equal
+
+        auth_req = google.auth.transport.requests.Request()
+        id_token = google.oauth2.id_token.fetch_id_token(auth_req, audience)
+        return {"Authorization": f"Bearer {id_token}"}
+
+    def get_headers(self):
+        common = {
+            "Accept": "text/plain,text/html,application/json,application/xhtml+xml,application/xml;q=0.9,/;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15"
+        }
+        auth = self.get_cloud_function_token(BIGQUERY_PARSER_URL)
+        return {**common , **auth}
+
     def _get_query_result(self, jobs, query, user):
+        if BIGQUERY_PARSER_URL:
+            query_metadata_from_parser = requests.post(BIGQUERY_PARSER_URL, headers=self.get_headers(), json=[query])
+            if query_metadata_from_parser.status_code == 200 and query_metadata_from_parser.json()["success"]:
+                table_column_mapping = defaultdict(set)
+                result = query_metadata_from_parser.json()
+                for success in result["success"]:
+                    for table in success["tableMetadataList"]:
+                        for column in table["columnMetadataList"]:
+                            table_column_mapping[table["tableName"]].add(column["column"])
+                self.check_for_pii_access(table_column_mapping, query, user)
+
         project_id = self._get_project_id()
         job_data = self._get_job_data(query)
         insert_response = jobs.insert(projectId=project_id, body=job_data).execute()
@@ -262,12 +301,7 @@ class BigQuery(BaseSQLQueryRunner):
             **{"projectId": project_id, "jobId": self.current_job_id, "location": self._get_location()}).execute()
         table_column_map: Dict[str, Set[str]] = self._get_columns_used_in_query(
             job_stats["statistics"]["query"]["queryPlan"])
-        get_policy_tag_mapping: Dict[str, Tuple[str, str]] = self._get_policy_tags()
-        policy_tags_accessed = self.get_policy_tags_in_query(get_policy_tag_mapping, table_column_map)
-
-        self._update_query_policy_tags(policy_tags_accessed, query)
-
-        policy_tag_columns: str = self._check_for_policy_tags_in_query(policy_tags_accessed, user)
+        policy_tag_columns = self.check_for_pii_access(table_column_map, query, user)
 
         rows = []
 
@@ -312,11 +346,19 @@ class BigQuery(BaseSQLQueryRunner):
 
         return data
 
+    def check_for_pii_access(self, table_column_map, query, user):
+        get_policy_tag_mapping: Dict[str, Tuple[str, str]] = self._get_policy_tags()
+        policy_tags_accessed = self.get_policy_tags_in_query(get_policy_tag_mapping, table_column_map)
+        self._update_query_policy_tags(policy_tags_accessed, query)
+        policy_tag_columns: str = self._check_for_policy_tags_in_query(policy_tags_accessed, user)
+        return policy_tag_columns
+
     def _check_for_policy_tags_in_query(self, policy_tags_accessed, user):
         if policy_tags_accessed:
             # Check if user email has access
-            access_results: List[Tuple[str]] = UserGroupMemberList.get_by_policy_name(policy_names=list(policy_tags_accessed.keys()),
-                                                                       user_email=user.email)
+            access_results: List[Tuple[str]] = UserGroupMemberList.get_by_policy_name(
+                policy_names=list(policy_tags_accessed.keys()),
+                user_email=user.email)
             access = {a[0] for a in access_results}
             missing_access_policy_tags = set(policy_tags_accessed.keys()) - access
             filtered_results: dict = {k: v for k, v in policy_tags_accessed.items() if
