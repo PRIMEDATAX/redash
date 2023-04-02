@@ -267,7 +267,7 @@ class BigQuery(BaseSQLQueryRunner):
 
         self._update_query_policy_tags(policy_tags_accessed, query)
 
-        self._check_for_policy_tags_in_query(policy_tags_accessed, user)
+        policy_tag_columns: str = self._check_for_policy_tags_in_query(policy_tags_accessed, user)
 
         rows = []
 
@@ -306,7 +306,8 @@ class BigQuery(BaseSQLQueryRunner):
             "columns": columns,
             "rows": rows,
             "metadata": {"data_scanned": _get_total_bytes_processed_for_resp(query_reply),
-                         "slots_used": _get_total_slots_for_resp(current_job_statistics)},
+                         "slots_used": _get_total_slots_for_resp(current_job_statistics),
+                         "policy_tag_columns": policy_tag_columns},
         }
 
         return data
@@ -317,14 +318,15 @@ class BigQuery(BaseSQLQueryRunner):
             access_results: List[Tuple[str]] = UserGroupMemberList.get_by_policy_name(policy_names=list(policy_tags_accessed.keys()),
                                                                        user_email=user.email)
             access = {a[0] for a in access_results}
+            missing_access_policy_tags = set(policy_tags_accessed.keys()) - access
+            filtered_results: dict = {k: v for k, v in policy_tags_accessed.items() if
+                                      k in missing_access_policy_tags}
+            f = [f"Policy tag- {k}, Columns accessed- {v}" for k, v in filtered_results.items()]
             if len(access) != len(policy_tags_accessed):
-                missing_access_policy_tags = set(policy_tags_accessed.keys()) - access
-                filtered_results: dict = {k: v for k, v in policy_tags_accessed.items() if
-                                          k in missing_access_policy_tags}
-                f = [f"Policy tag- {k}, Columns accessed- {v}" for k, v in filtered_results.items()]
-
                 raise PermissionDeniedException(
                     "User does not have permission to query columns. \n{} ".format('\n'.join(f)))
+            else:
+                return '\n'.join([f"Policy tag- {k}, Columns accessed- {v}" for k, v in policy_tags_accessed.items()])
 
     def _update_query_policy_tags(self, policy_tags_accessed, query):
         query_hash = self.gen_query_hash(query)
