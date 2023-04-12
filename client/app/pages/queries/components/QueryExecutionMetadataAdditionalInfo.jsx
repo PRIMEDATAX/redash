@@ -1,14 +1,6 @@
 import React from "react";
 import PropTypes from "prop-types";
-import WarningTwoTone from "@ant-design/icons/WarningTwoTone";
-import TimeAgo from "@/components/TimeAgo";
-import Tooltip from "@/components/Tooltip";
-import useAddToDashboardDialog from "../hooks/useAddToDashboardDialog";
-import useEmbedDialog from "../hooks/useEmbedDialog";
-import QueryControlDropdown from "@/components/EditVisualizationButton/QueryControlDropdown";
-import EditVisualizationButton from "@/components/EditVisualizationButton";
 import useQueryResultData from "@/lib/useQueryResultData";
-import {durationHumanize, formatNumber, pluralize, prettySize} from "@/lib/utils";
 
 import "./QueryExecutionMetadataAdditionalInfo.less";
 
@@ -27,8 +19,8 @@ export default function QueryExecutionMetadataAdditionalInfo({
       {extraActions}
       <span className="m-l-5 m-r-10">
         {queryResultData.metadata.policy_tag_columns && (
-          <span className="m-l-5" >
-            <strong>Policy tagged columns used:  </strong>
+          <span className="policy_text m-l-5">
+            <strong>WARNING:  </strong>
             {queryResultData.metadata.policy_tag_columns}
           </span>
         )}

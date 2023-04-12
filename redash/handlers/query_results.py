@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 
 import unicodedata
@@ -40,6 +41,8 @@ from redash.serializers import (
     serialize_job,
 )
 from redash.utils.permission_denied_exception import PermissionDeniedException
+
+IS_PRIVACY_CHECK_ENABLED = os.getenv("REDASH_PRIVACY_CHECK", False)
 
 
 def error_response(message, http_status=400):
@@ -324,16 +327,18 @@ class QueryResultResource(BaseResource):
                 return error_messages["no_permission"]
 
     def check_for_policy_tag_permissions(self, query_hash: str):
-        query_policy_tags: List[str] = get_object_or_404(models.QueryIdPolicyTagMapping.get_by_query_id,
-                                                         query_hash
-                                                         )
-        if query_policy_tags:
-            access: List[str] = UserGroupMemberList.get_by_policy_name(policy_names=list(query_policy_tags),
-                                                                       user_email=self.current_user.email)
-            if len(access) != len(query_policy_tags):
-                missing_access_policy_tags = set(query_policy_tags) - set(access)
-                abort(400,
-                      message=f"User {self.current_user.email} does not have permission to query {missing_access_policy_tags}")
+        if IS_PRIVACY_CHECK_ENABLED:
+            query_policy_tags: List[str] = get_object_or_404(models.QueryIdPolicyTagMapping.get_by_query_id,
+                                                             query_hash
+                                                             )
+            if query_policy_tags:
+                access: List[str] = UserGroupMemberList.get_by_policy_name(policy_names=list(query_policy_tags),
+                                                                           user_email=self.current_user.email)
+                if len(access) != len(query_policy_tags):
+                    missing_access_policy_tags = set(query_policy_tags) - set(access)
+                    abort(400,
+                          message=f"User {self.current_user.email} does not have permission to query {missing_access_policy_tags}."
+                                  f"Execute the query again or check - https://dunzoit.atlassian.net/l/cp/otZqfuL2")
 
     @require_any_of_permission(("view_query", "execute_query"))
     def get(self, query_id=None, query_result_id=None, filetype="json"):

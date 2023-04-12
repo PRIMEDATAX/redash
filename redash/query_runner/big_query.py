@@ -22,6 +22,7 @@ from redash.utils import json_dumps, json_loads
 from redash.utils.permission_denied_exception import PermissionDeniedException
 
 BIGQUERY_PARSER_URL = os.getenv("REDASH_BIGQUERY_PARSER_URL", False)
+IS_PRIVACY_CHECK_ENABLED = os.getenv("REDASH_PRIVACY_CHECK", False)
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,6 @@ def _get_query_results(jobs, project_id, location, job_id, start_index):
     query_reply = jobs.getQueryResults(
         projectId=project_id, location=location, jobId=job_id, startIndex=start_index
     ).execute()
-    logging.debug("query_reply %s", query_reply)
     if not query_reply["jobComplete"]:
         time.sleep(5)
         return _get_query_results(jobs, project_id, location, job_id, start_index)
@@ -100,7 +100,6 @@ def _get_total_bytes_processed_for_resp(bq_response):
 
 
 def _get_total_slots_for_resp(bq_response):
-    logger.debug(bq_response)
     if "endTime" in bq_response:
         return int(bq_response.get("totalSlotMs")) / (int(bq_response.get("finalExecutionDurationMs")))
     else:
@@ -215,7 +214,6 @@ class BigQuery(BaseSQLQueryRunner):
         if "jobTimeoutMillis" in self.configuration:
             job_data["configuration"]["jobTimeoutMs"] = self.configuration["jobTimeoutMillis"]
 
-        job_data["configuration"]["query"]["useQueryCache"] = False
         job_data["configuration"]["query"]["priority"] = "BATCH"
         return job_data
 
@@ -238,7 +236,7 @@ class BigQuery(BaseSQLQueryRunner):
                 results[table_name].add(str(column.split(":")[-1]))
         return results
 
-    @cached(cache=TTLCache(maxsize=3000, ttl=600))
+    @cached(cache=TTLCache(maxsize=3000, ttl=3600))
     def _get_policy_tags(self) -> Dict[str, List[Tuple[str, str]]]:
         all_policy_tag_mappings: List[TableColumnPolicyTagMapping] = TableColumnPolicyTagMapping.get_all()
         grouped_map = defaultdict(list)
@@ -268,9 +266,10 @@ class BigQuery(BaseSQLQueryRunner):
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15"
         }
         auth = self.get_cloud_function_token(BIGQUERY_PARSER_URL)
-        return {**common , **auth}
+        return {**common, **auth}
 
     def _get_query_result(self, jobs, query, user):
+        policy_tag_columns = ""
         if BIGQUERY_PARSER_URL:
             query_metadata_from_parser = requests.post(BIGQUERY_PARSER_URL, headers=self.get_headers(), json=[query])
             if query_metadata_from_parser.status_code == 200 and query_metadata_from_parser.json()["success"]:
@@ -280,8 +279,9 @@ class BigQuery(BaseSQLQueryRunner):
                     for table in success["tableMetadataList"]:
                         for column in table["columnMetadataList"]:
                             table_column_mapping[table["tableName"]].add(column["column"])
-                self.check_for_pii_access(table_column_mapping, query, user)
+                policy_tag_columns = self.check_for_pii_access(table_column_mapping, query, user)
 
+        logger.debug(policy_tag_columns)
         project_id = self._get_project_id()
         job_data = self._get_job_data(query)
         insert_response = jobs.insert(projectId=project_id, body=job_data).execute()
@@ -299,9 +299,12 @@ class BigQuery(BaseSQLQueryRunner):
 
         job_stats = jobs.get(
             **{"projectId": project_id, "jobId": self.current_job_id, "location": self._get_location()}).execute()
+
         table_column_map: Dict[str, Set[str]] = self._get_columns_used_in_query(
-            job_stats["statistics"]["query"]["queryPlan"])
-        policy_tag_columns = self.check_for_pii_access(table_column_map, query, user)
+            job_stats["statistics"]["query"].get("queryPlan", {}))
+        if not policy_tag_columns:
+            policy_tag_columns = self.check_for_pii_access(table_column_map, query, user)
+            logger.debug(policy_tag_columns)
 
         rows = []
 
@@ -334,7 +337,6 @@ class BigQuery(BaseSQLQueryRunner):
         ]
 
         current_job_statistics = job_stats["statistics"]
-        logger.debug(current_job_statistics)
 
         data = {
             "columns": columns,
@@ -349,7 +351,8 @@ class BigQuery(BaseSQLQueryRunner):
     def check_for_pii_access(self, table_column_map, query, user):
         get_policy_tag_mapping: Dict[str, Tuple[str, str]] = self._get_policy_tags()
         policy_tags_accessed = self.get_policy_tags_in_query(get_policy_tag_mapping, table_column_map)
-        self._update_query_policy_tags(policy_tags_accessed, query)
+        if IS_PRIVACY_CHECK_ENABLED:
+            self._update_query_policy_tags(policy_tags_accessed, query)
         policy_tag_columns: str = self._check_for_policy_tags_in_query(policy_tags_accessed, user)
         return policy_tag_columns
 
@@ -363,12 +366,14 @@ class BigQuery(BaseSQLQueryRunner):
             missing_access_policy_tags = set(policy_tags_accessed.keys()) - access
             filtered_results: dict = {k: v for k, v in policy_tags_accessed.items() if
                                       k in missing_access_policy_tags}
-            f = [f"Policy tag- {k}, Columns accessed- {v}" for k, v in filtered_results.items()]
-            if len(access) != len(policy_tags_accessed):
+            f = [f"Policy tag- {k}, Sensitive columns accessed- {v}" for k, v in filtered_results.items()]
+            if IS_PRIVACY_CHECK_ENABLED and len(access) != len(policy_tags_accessed):
                 raise PermissionDeniedException(
-                    "User does not have permission to query columns. \n{} ".format('\n'.join(f)))
+                    "User does not have permission to query columns. \n{}. Please read - https://dunzoit.atlassian.net/l/cp/otZqfuL2".format(
+                        '\n'.join(f)))
             else:
-                return '\n'.join([f"Policy tag- {k}, Columns accessed- {v}" for k, v in policy_tags_accessed.items()])
+                return ' |\n'.join(
+                    [f"Policy tag- {k}, Sensitive columns accessed- {v}" for k, v in policy_tags_accessed.items()])
 
     def _update_query_policy_tags(self, policy_tags_accessed, query):
         query_hash = self.gen_query_hash(query)
@@ -417,9 +422,7 @@ class BigQuery(BaseSQLQueryRunner):
             dataset_id = dataset["datasetReference"]["datasetId"]
             query = query_base.format(schema_project_id=schema_project_id, dataset_id=dataset_id)
             queries.append(query)
-        logger.debug(datasets)
         query = '\nUNION ALL\n'.join(queries)
-        logger.debug(queries)
         results, error = self.run_query(query, None)
         if error is not None:
             self._handle_run_query_error(error)

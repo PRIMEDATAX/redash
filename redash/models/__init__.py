@@ -1190,7 +1190,7 @@ class Dashboard(ChangeTrackingMixin, TimestampMixin, BelongsToOrgMixin, db.Model
                 DataSourceGroup, Query.data_source_id == DataSourceGroup.data_source_id
             )
             .filter(
-                Dashboard.is_archived is False,
+                Dashboard.is_archived == False,
                 (
                     DataSourceGroup.group_id.in_(group_ids)
                     | (Dashboard.user_id == user_id)
@@ -1200,7 +1200,7 @@ class Dashboard(ChangeTrackingMixin, TimestampMixin, BelongsToOrgMixin, db.Model
         )
 
         query = query.filter(
-            or_(Dashboard.user_id == user_id, Dashboard.is_draft is False)
+            or_(Dashboard.user_id == user_id, Dashboard.is_draft == False)
         )
 
         return query
