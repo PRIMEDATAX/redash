@@ -1,0 +1,31 @@
+.policy_text{
+  color: #0c7cd5;
+}
+
+.query-execution-metadata {
+  padding: 10px 15px;
+  background: #0a6ebd;
+  display: flex;
+  align-items: center;
+
+  button,
+  div,
+  span {
+    position: relative;
+  }
+
+  div:last-child {
+    flex-grow: 1;
+    text-align: right;
+  }
+
+  &:before {
+    content: "";
+    height: 50px;
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+    pointer-events: none;
+    left: 0;
+  }
+}

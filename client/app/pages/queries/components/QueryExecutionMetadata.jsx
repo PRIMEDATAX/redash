@@ -1,24 +1,26 @@
 import React from "react";
 import PropTypes from "prop-types";
+import WarningTwoTone from "@ant-design/icons/WarningTwoTone";
 import TimeAgo from "@/components/TimeAgo";
+import Tooltip from "@/components/Tooltip";
 import useAddToDashboardDialog from "../hooks/useAddToDashboardDialog";
 import useEmbedDialog from "../hooks/useEmbedDialog";
 import QueryControlDropdown from "@/components/EditVisualizationButton/QueryControlDropdown";
 import EditVisualizationButton from "@/components/EditVisualizationButton";
 import useQueryResultData from "@/lib/useQueryResultData";
-import { durationHumanize, pluralize, prettySize } from "@/lib/utils";
+import {durationHumanize, formatNumber, pluralize, prettySize} from "@/lib/utils";
 
 import "./QueryExecutionMetadata.less";
 
 export default function QueryExecutionMetadata({
-  query,
-  queryResult,
-  isQueryExecuting,
-  selectedVisualization,
-  showEditVisualizationButton,
-  onEditVisualization,
-  extraActions,
-}) {
+                                                 query,
+                                                 queryResult,
+                                                 isQueryExecuting,
+                                                 selectedVisualization,
+                                                 showEditVisualizationButton,
+                                                 onEditVisualization,
+                                                 extraActions,
+                                               }) {
   const queryResultData = useQueryResultData(queryResult);
   const openAddToDashboardDialog = useAddToDashboardDialog(query);
   const openEmbedDialog = useEmbedDialog(query);
@@ -38,10 +40,22 @@ export default function QueryExecutionMetadata({
       </span>
       {extraActions}
       {showEditVisualizationButton && (
-        <EditVisualizationButton openVisualizationEditor={onEditVisualization} selectedTab={selectedVisualization} />
+        <EditVisualizationButton openVisualizationEditor={onEditVisualization} selectedTab={selectedVisualization}/>
       )}
       <span className="m-l-5 m-r-10">
         <span>
+          {queryResultData.truncated === true && (
+            <span className="m-r-5">
+              <Tooltip
+                title={
+                  "Result truncated to " +
+                  queryResultData.rows.length +
+                  " rows. Databricks may truncate query results that are unstably large."
+                }>
+                <WarningTwoTone twoToneColor="#FF9800"/>
+              </Tooltip>
+            </span>
+          )}
           <strong>{queryResultData.rows.length}</strong> {pluralize("row", queryResultData.rows.length)}
         </span>
         <span className="m-l-5">
@@ -55,16 +69,23 @@ export default function QueryExecutionMetadata({
         </span>
         {queryResultData.metadata.data_scanned && (
           <span className="m-l-5">
-            Data Scanned
-            <strong>{prettySize(queryResultData.metadata.data_scanned)}</strong>
+            Data Scanned:
+            <strong> {prettySize(queryResultData.metadata.data_scanned)} </strong>
           </span>
         )}
+
       </span>
       <div>
         <span className="m-r-10">
+                  {queryResultData.metadata.slots_used && (
+                    <span className="metadata-info m-l-5">
+            Slots used:
+            <strong> {formatNumber(queryResultData.metadata.slots_used)} </strong>
+          </span>
+                  )}
           <span className="hidden-xs">Refreshed </span>
           <strong>
-            <TimeAgo date={queryResultData.retrievedAt} placeholder="-" />
+            <TimeAgo date={queryResultData.retrievedAt} placeholder="-"/>
           </strong>
         </span>
       </div>
@@ -86,6 +107,7 @@ QueryExecutionMetadata.defaultProps = {
   isQueryExecuting: false,
   selectedVisualization: null,
   showEditVisualizationButton: false,
-  onEditVisualization: () => {},
+  onEditVisualization: () => {
+  },
   extraActions: null,
 };

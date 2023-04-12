@@ -1,27 +1,42 @@
 import datetime
+import json
 import logging
-import sys
+import os
 import time
 from base64 import b64decode
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Set, Tuple
 
 import httplib2
 import requests
+import google.auth.transport.requests
+import google.oauth2.id_token
+from cachetools import cached, TTLCache
 
 from redash import settings
+from redash.models import UserGroupMemberList, TableColumnPolicyTagMapping, QueryIdPolicyTagMapping
 from redash.query_runner import *
+from redash.settings import parse_boolean
 from redash.utils import json_dumps, json_loads
+from redash.utils.permission_denied_exception import PermissionDeniedException
+
+BIGQUERY_PARSER_URL = os.getenv("REDASH_BIGQUERY_PARSER_URL", False)
+IS_PRIVACY_CHECK_ENABLED = os.getenv("REDASH_PRIVACY_CHECK", False)
 
 logger = logging.getLogger(__name__)
 
 try:
-    import apiclient.errors
-    from apiclient.discovery import build
-    from apiclient.errors import HttpError
+
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
     from oauth2client.service_account import ServiceAccountCredentials
 
     enabled = True
 except ImportError:
     enabled = False
+
+ANNOTATE_QUERY = parse_boolean(os.environ.get("BIGQUERY_ANNOTATE_QUERY", "true"))
 
 types_map = {
     "INTEGER": TYPE_INTEGER,
@@ -64,27 +79,35 @@ def transform_row(row, fields):
 
 
 def _load_key(filename):
-    f = file(filename, "rb")
-    try:
-        return f.read()
-    finally:
-        f.close()
+    return Path(filename).read_text()
 
 
 def _get_query_results(jobs, project_id, location, job_id, start_index):
     query_reply = jobs.getQueryResults(
         projectId=project_id, location=location, jobId=job_id, startIndex=start_index
     ).execute()
-    logging.debug("query_reply %s", query_reply)
     if not query_reply["jobComplete"]:
-        time.sleep(10)
+        time.sleep(5)
         return _get_query_results(jobs, project_id, location, job_id, start_index)
 
     return query_reply
 
 
-class BigQuery(BaseQueryRunner):
-    should_annotate_query = False
+def _get_total_bytes_processed_for_resp(bq_response):
+    # BigQuery hides the total bytes processed for queries to tables with row-level access controls.
+    # For these queries the "totalBytesProcessed" field may not be defined in the response.
+    return int(bq_response.get("totalBytesProcessed", "0"))
+
+
+def _get_total_slots_for_resp(bq_response):
+    if "endTime" in bq_response:
+        return int(bq_response.get("totalSlotMs")) / (int(bq_response.get("finalExecutionDurationMs")))
+    else:
+        return 0
+
+
+class BigQuery(BaseSQLQueryRunner):
+    should_annotate_query = ANNOTATE_QUERY
     noop_query = "SELECT 1"
 
     @classmethod
@@ -113,6 +136,7 @@ class BigQuery(BaseQueryRunner):
                 },
                 "location": {"type": "string", "title": "Processing Location"},
                 "loadSchema": {"type": "boolean", "title": "Load Schema"},
+                "jobTimeoutMillis": {"type": "number", "title": "Job timeout in milliseconds", "default": 1800000},
                 "maximumBillingTier": {
                     "type": "number",
                     "title": "Maximum Billing Tier",
@@ -126,6 +150,7 @@ class BigQuery(BaseQueryRunner):
                 "useStandardSql",
                 "location",
                 "totalMBytesProcessedLimit",
+                "jobTimeoutMillis",
                 "maximumBillingTier",
                 "userDefinedFunctionResourceUri",
             ],
@@ -144,7 +169,7 @@ class BigQuery(BaseQueryRunner):
         http = httplib2.Http(timeout=settings.BIGQUERY_HTTP_TIMEOUT)
         http = creds.authorize(http)
 
-        return build("bigquery", "v2", http=http)
+        return build("bigquery", "v2", http=http, cache_discovery=False)
 
     def _get_project_id(self):
         return self.configuration["projectId"]
@@ -162,7 +187,7 @@ class BigQuery(BaseQueryRunner):
             job_data["useLegacySql"] = False
 
         response = jobs.query(projectId=self._get_project_id(), body=job_data).execute()
-        return int(response["totalBytesProcessed"])
+        return _get_total_bytes_processed_for_resp(response)
 
     def _get_job_data(self, query):
         job_data = {"configuration": {"query": {"query": query}}}
@@ -186,9 +211,77 @@ class BigQuery(BaseQueryRunner):
                 "maximumBillingTier"
             ] = self.configuration["maximumBillingTier"]
 
+        if "jobTimeoutMillis" in self.configuration:
+            job_data["configuration"]["jobTimeoutMs"] = self.configuration["jobTimeoutMillis"]
+
+        job_data["configuration"]["query"]["priority"] = "BATCH"
         return job_data
 
-    def _get_query_result(self, jobs, query):
+    def _get_columns_used_in_query(self, query_plan):
+        substeps = []
+        for input in query_plan:
+            for step in input["steps"]:
+                if step["kind"] == 'READ':
+                    for substep in step["substeps"]:
+                        if 'FROM' in substep and not substep.startswith("FROM __"):
+                            substeps.append(step["substeps"])
+
+        results = {}
+        for substep in substeps:
+            table_name = substep[1].split(" ")[-1]
+            if str(table_name) not in results:
+                results[str(table_name)] = set()
+            substep = substep[0].split(",")
+            for column in substep:
+                results[table_name].add(str(column.split(":")[-1]))
+        return results
+
+    @cached(cache=TTLCache(maxsize=3000, ttl=3600))
+    def _get_policy_tags(self) -> Dict[str, List[Tuple[str, str]]]:
+        all_policy_tag_mappings: List[TableColumnPolicyTagMapping] = TableColumnPolicyTagMapping.get_all()
+        grouped_map = defaultdict(list)
+        for policy_tags in all_policy_tag_mappings:
+            policy_tag_table_name = f"{policy_tags.project_id}.{policy_tags.dataset_id}.{policy_tags.table_name}"
+            grouped_map[policy_tag_table_name].append((policy_tags.column_name, policy_tags.policy_tag))
+        return grouped_map
+
+    def get_cloud_function_token(self, audience):
+        """
+        make_authorized_get_request makes a GET request to the specified HTTP endpoint
+        by authenticating with the ID token obtained from the google-auth client library
+        using the specified audience value.
+        """
+
+        # Cloud Functions uses your function's URL as the `audience` value
+        # audience = https://project-region-projectid.cloudfunctions.net/myFunction
+        # For Cloud Functions, `endpoint` and `audience` should be equal
+
+        auth_req = google.auth.transport.requests.Request()
+        id_token = google.oauth2.id_token.fetch_id_token(auth_req, audience)
+        return {"Authorization": f"Bearer {id_token}"}
+
+    def get_headers(self):
+        common = {
+            "Accept": "text/plain,text/html,application/json,application/xhtml+xml,application/xml;q=0.9,/;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.1.1 Safari/605.1.15"
+        }
+        auth = self.get_cloud_function_token(BIGQUERY_PARSER_URL)
+        return {**common, **auth}
+
+    def _get_query_result(self, jobs, query, user):
+        policy_tag_columns = ""
+        if BIGQUERY_PARSER_URL:
+            query_metadata_from_parser = requests.post(BIGQUERY_PARSER_URL, headers=self.get_headers(), json=[query])
+            if query_metadata_from_parser.status_code == 200 and query_metadata_from_parser.json()["success"]:
+                table_column_mapping = defaultdict(set)
+                result = query_metadata_from_parser.json()
+                for success in result["success"]:
+                    for table in success["tableMetadataList"]:
+                        for column in table["columnMetadataList"]:
+                            table_column_mapping[table["tableName"]].add(column["column"])
+                policy_tag_columns = self.check_for_pii_access(table_column_mapping, query, user)
+
+        logger.debug(policy_tag_columns)
         project_id = self._get_project_id()
         job_data = self._get_job_data(query)
         insert_response = jobs.insert(projectId=project_id, body=job_data).execute()
@@ -203,6 +296,15 @@ class BigQuery(BaseQueryRunner):
         )
 
         logger.debug("bigquery replied: %s", query_reply)
+
+        job_stats = jobs.get(
+            **{"projectId": project_id, "jobId": self.current_job_id, "location": self._get_location()}).execute()
+
+        table_column_map: Dict[str, Set[str]] = self._get_columns_used_in_query(
+            job_stats["statistics"]["query"].get("queryPlan", {}))
+        if not policy_tag_columns:
+            policy_tag_columns = self.check_for_pii_access(table_column_map, query, user)
+            logger.debug(policy_tag_columns)
 
         rows = []
 
@@ -234,75 +336,105 @@ class BigQuery(BaseQueryRunner):
             for f in query_reply["schema"]["fields"]
         ]
 
+        current_job_statistics = job_stats["statistics"]
+
         data = {
             "columns": columns,
             "rows": rows,
-            "metadata": {"data_scanned": int(query_reply["totalBytesProcessed"])},
+            "metadata": {"data_scanned": _get_total_bytes_processed_for_resp(query_reply),
+                         "slots_used": _get_total_slots_for_resp(current_job_statistics),
+                         "policy_tag_columns": policy_tag_columns},
         }
 
         return data
 
-    def _get_columns_schema(self, table_data):
-        columns = []
-        for column in table_data.get("schema", {}).get("fields", []):
-            columns.extend(self._get_columns_schema_column(column))
+    def check_for_pii_access(self, table_column_map, query, user):
+        get_policy_tag_mapping: Dict[str, Tuple[str, str]] = self._get_policy_tags()
+        policy_tags_accessed = self.get_policy_tags_in_query(get_policy_tag_mapping, table_column_map)
+        if IS_PRIVACY_CHECK_ENABLED:
+            self._update_query_policy_tags(policy_tags_accessed, query)
+        policy_tag_columns: str = self._check_for_policy_tags_in_query(policy_tags_accessed, user)
+        return policy_tag_columns
 
-        project_id = self._get_project_id()
-        table_name = table_data["id"].replace("%s:" % project_id, "")
-        return {"name": table_name, "columns": columns}
+    def _check_for_policy_tags_in_query(self, policy_tags_accessed, user):
+        if policy_tags_accessed:
+            # Check if user email has access
+            access_results: List[Tuple[str]] = UserGroupMemberList.get_by_policy_name(
+                policy_names=list(policy_tags_accessed.keys()),
+                user_email=user.email)
+            access = {a[0] for a in access_results}
+            missing_access_policy_tags = set(policy_tags_accessed.keys()) - access
+            filtered_results: dict = {k: v for k, v in policy_tags_accessed.items() if
+                                      k in missing_access_policy_tags}
+            f = [f"Policy tag- {k}, Sensitive columns accessed- {v}" for k, v in filtered_results.items()]
+            if IS_PRIVACY_CHECK_ENABLED and len(access) != len(policy_tags_accessed):
+                raise PermissionDeniedException(
+                    "User does not have permission to query columns. \n{}. Please read - https://dunzoit.atlassian.net/l/cp/otZqfuL2".format(
+                        '\n'.join(f)))
+            else:
+                return ' |\n'.join(
+                    [f"Policy tag- {k}, Sensitive columns accessed- {v}" for k, v in policy_tags_accessed.items()])
 
-    def _get_columns_schema_column(self, column):
-        columns = []
-        if column["type"] == "RECORD":
-            for field in column["fields"]:
-                columns.append("{}.{}".format(column["name"], field["name"]))
-        else:
-            columns.append(column["name"])
+    def _update_query_policy_tags(self, policy_tags_accessed, query):
+        query_hash = self.gen_query_hash(query)
+        query_policy_tags = [QueryIdPolicyTagMapping(query_hash=query_hash, policy_name=tag) for tag in
+                             policy_tags_accessed.keys()]
+        QueryIdPolicyTagMapping.update_table(query_hash, query_policy_tags)
 
-        return columns
+    def get_policy_tags_in_query(self, get_policy_tag_mapping, table_column_map):
+        policy_tags_accessed = defaultdict(set)
+        for table_name, column_list in table_column_map.items():
+            if table_name in get_policy_tag_mapping.keys():
+                for column, tag in get_policy_tag_mapping[table_name]:
+                    if column in column_list:
+                        policy_tags_accessed[tag].add((table_name, column))
+        return policy_tags_accessed
+
+    def _get_project_datasets(self, project_id):
+        result = []
+        service = self._get_bigquery_service()
+
+        datasets = service.datasets().list(projectId=project_id).execute()
+        result.extend(datasets.get("datasets", []))
+        nextPageToken = datasets.get('nextPageToken', None)
+
+        while nextPageToken is not None:
+            datasets = service.datasets().list(projectId=project_id, pageToken=nextPageToken).execute()
+            result.extend(datasets.get("datasets", []))
+            nextPageToken = datasets.get('nextPageToken', None)
+
+        return result
 
     def get_schema(self, get_stats=False):
+        schema_project_id = os.getenv('BIGQUERY_SCHEMA_PROJECT_ID', self._get_project_id())
         if not self.configuration.get("loadSchema", False):
             return []
 
-        service = self._get_bigquery_service()
-        project_id = self._get_project_id()
-        datasets = service.datasets().list(projectId=project_id).execute()
-        schema = []
-        for dataset in datasets.get("datasets", []):
+        datasets = self._get_project_datasets(schema_project_id)
+
+        query_base = """SELECT table_schema, table_name, column_name, data_type FROM
+         `{schema_project_id}.{dataset_id}`.INFORMATION_SCHEMA.COLUMNS
+          WHERE table_schema NOT IN ('information_schema')"""
+
+        schema = {}
+        queries = []
+        for dataset in datasets:
             dataset_id = dataset["datasetReference"]["datasetId"]
-            tables = (
-                service.tables()
-                .list(projectId=project_id, datasetId=dataset_id)
-                .execute()
-            )
-            while True:
-                for table in tables.get("tables", []):
-                    table_data = (
-                        service.tables()
-                        .get(
-                            projectId=project_id,
-                            datasetId=dataset_id,
-                            tableId=table["tableReference"]["tableId"],
-                        )
-                        .execute()
-                    )
-                    table_schema = self._get_columns_schema(table_data)
-                    schema.append(table_schema)
+            query = query_base.format(schema_project_id=schema_project_id, dataset_id=dataset_id)
+            queries.append(query)
+        query = '\nUNION ALL\n'.join(queries)
+        results, error = self.run_query(query, None)
+        if error is not None:
+            self._handle_run_query_error(error)
 
-                next_token = tables.get("nextPageToken", None)
-                if next_token is None:
-                    break
+        results = json_loads(results)
+        for row in results["rows"]:
+            table_name = "{0}.{1}".format(row["table_schema"], row["table_name"])
+            if table_name not in schema:
+                schema[table_name] = {"name": table_name, "columns": []}
+            schema[table_name]["columns"].append(f"{row['column_name']} ({row['data_type']})")
 
-                tables = (
-                    service.tables()
-                    .list(
-                        projectId=project_id, datasetId=dataset_id, pageToken=next_token
-                    )
-                    .execute()
-                )
-
-        return schema
+        return list(schema.values())
 
     def run_query(self, query, user):
         logger.debug("BigQuery got query: %s", query)
@@ -323,13 +455,13 @@ class BigQuery(BaseQueryRunner):
                         % (limitMB, processedMB),
                     )
 
-            data = self._get_query_result(jobs, query)
+            data = self._get_query_result(jobs, query, user)
             error = None
 
             json_data = json_dumps(data, ignore_nan=True)
-        except apiclient.errors.HttpError as e:
+        except HttpError as e:
             json_data = None
-            if e.resp.status == 400:
+            if e.resp.status in [400, 404]:
                 error = json_loads(e.content)["error"]["message"]
             else:
                 error = e.content

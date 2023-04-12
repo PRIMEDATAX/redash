@@ -1,23 +1,30 @@
 # This configuration file is for the **development** setup.
 # For a production example please refer to getredash/setup repository on GitHub.
-version: "2"
+version: "2.4"
 x-redash-service: &redash-service
   build:
     context: .
     args:
-      skip_frontend_build: "true"
+      skip_frontend_build: "true"  # set to empty string to build
   volumes:
     - .:/app
+  env_file:
+    - .env
 x-redash-environment: &redash-environment
-  REDASH_LOG_LEVEL: "INFO"
+  REDASH_LOG_LEVEL: "DEBUG"
   REDASH_REDIS_URL: "redis://redis:6379/0"
   REDASH_DATABASE_URL: "postgresql://postgres@postgres/postgres"
   REDASH_RATELIMIT_ENABLED: "false"
   REDASH_MAIL_DEFAULT_SENDER: "redash@example.com"
   REDASH_MAIL_SERVER: "email"
+  BIGQUERY_SCHEMA_PROJECT_ID: "prod-application"
+  REDASH_ENFORCE_CSRF: "true"
+  REDASH_GUNICORN_TIMEOUT: 60
+  # Set secret keys in the .env file
 services:
   server:
     <<: *redash-service
+    platform: linux/arm64/v8
     command: dev_server
     depends_on:
       - postgres
@@ -30,14 +37,25 @@ services:
       PYTHONUNBUFFERED: 0
   scheduler:
     <<: *redash-service
-    command: dev_scheduler
+    platform: linux/arm64/v8
+    command: scheduler
     depends_on:
       - server
     environment:
       <<: *redash-environment
   worker:
     <<: *redash-service
-    command: dev_worker
+    platform: linux/arm64/v8
+    command: worker
+    depends_on:
+      - server
+    environment:
+      <<: *redash-environment
+      PYTHONUNBUFFERED: 0
+  worker1:
+    <<: *redash-service
+    platform: linux/arm64/v8
+    command: worker
     depends_on:
       - server
     environment:
@@ -47,7 +65,7 @@ services:
     image: redis:3-alpine
     restart: unless-stopped
   postgres:
-    image: postgres:9.5-alpine
+    image: postgres:9.6-alpine
     # The following turns the DB into less durable, but gains significant performance improvements for the tests run (x3
     # improvement on my personal machine). We should consider moving this into a dedicated Docker Compose configuration for
     # tests.
@@ -57,6 +75,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_HOST_AUTH_METHOD: "trust"
+    container_name: postgres
   email:
     image: djfarrelly/maildev
     ports:
