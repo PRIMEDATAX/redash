@@ -15,7 +15,7 @@ jobs:
       url: "app.{{ vars.BASE_DOMAIN }}"
     runs-on: ubuntu-latest
     env:
-      IMAGE_NAME: asia-south1-python.pkg.dev/prod-data-platform/redash/redash
+      IMAGE_NAME: asia-south1-docker.pkg.dev/prod-data-platform/redash/redash
 
     steps:
       - uses: actions/checkout@v3
