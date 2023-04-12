@@ -101,7 +101,11 @@ def _get_total_bytes_processed_for_resp(bq_response):
 
 def _get_total_slots_for_resp(bq_response):
     if "endTime" in bq_response:
-        return int(bq_response.get("totalSlotMs")) / (int(bq_response.get("finalExecutionDurationMs")))
+        if bq_response.get("finalExecutionDurationMs"):
+            duration = int(bq_response.get("finalExecutionDurationMs"))
+        else:
+            duration = int(bq_response.get("endTime")) - int(bq_response.get("startTime"))
+        return int(bq_response.get("totalSlotMs")) / duration
     else:
         return 0
 
@@ -374,6 +378,7 @@ class BigQuery(BaseSQLQueryRunner):
             else:
                 return ' |\n'.join(
                     [f"Policy tag- {k}, Sensitive columns accessed- {v}" for k, v in policy_tags_accessed.items()])
+        return ""
 
     def _update_query_policy_tags(self, policy_tags_accessed, query):
         query_hash = self.gen_query_hash(query)
