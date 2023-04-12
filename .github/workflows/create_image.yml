@@ -15,6 +15,7 @@ jobs:
       url: "app.{{ vars.BASE_DOMAIN }}"
     runs-on: ubuntu-latest
     env:
+      REGISTRY_REGION: asia-south1-docker.pkg.dev
       IMAGE_NAME: asia-south1-docker.pkg.dev/prod-data-platform/redash/redash
 
     steps:
@@ -26,6 +27,12 @@ jobs:
           workload_identity_provider: 'projects/1027534050611/locations/global/workloadIdentityPools/github-pool/providers/github'
           service_account: 'prod-data-eng-deployment@prod-data-platform.iam.gserviceaccount.com'
           token_format: 'access_token'
+
+      - uses: 'docker/login-action@v1'
+        with:
+          registry: ${{ vars.REGISTRY_REGION }}
+          username: 'oauth2accesstoken'
+          password: '${{ steps.auth.outputs.access_token }}'
 
       - uses: olegtarasov/get-tag@v2.1
         id: tag_name
