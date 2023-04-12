@@ -30,7 +30,7 @@ jobs:
 
       - uses: 'docker/login-action@v1'
         with:
-          registry: ${{ vars.REGISTRY_REGION }}
+          registry: ${{ env.REGISTRY_REGION }}
           username: 'oauth2accesstoken'
           password: '${{ steps.auth.outputs.access_token }}'
 
