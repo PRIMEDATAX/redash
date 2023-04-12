@@ -37,14 +37,13 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
-        platforms: linux/amd64,linux/arm64
 
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
           context: .
           push: true
-          platform: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64
           tags: "${{ vars.IMAGE_NAME }}:${{ steps.tag_name.outputs.tag }}"
           cache-from: type=gha
           cache-to: type=gha,mode=max
