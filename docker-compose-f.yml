@@ -1,16 +1,19 @@
 ---
 version: "2"
 x-redash-service: &redash-service
-  image: redash_server
+  image: asia-south1-docker.pkg.dev/prod-data-platform/redash/redash-v9:7
+  env_file: /opt/redash/env
   restart: always
+  logging:
+    driver: "local"
 services:
   server:
     <<: *redash-service
     command: server
     container_name: redash
-    ports:
-      - "5000:5000"
-      - "5678:5678"
+    expose:
+      - 5000
+      - 5678
     environment:
       PYTHONUNBUFFERED: 0
       REDASH_WEB_WORKERS: 5
@@ -53,22 +56,81 @@ services:
     depends_on:
       - server
     mem_limit: 7516192768
-  redis:
-    image: redis:3-alpine
-    restart: unless-stopped
-  postgres:
-    image: postgres:9.5-alpine
-    # The following turns the DB into less durable, but gains significant performance improvements for the tests run (x3
-    # improvement on my personal machine). We should consider moving this into a dedicated Docker Compose configuration for
-    # tests.
+  adhoc_worker5:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker6:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker7:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker8:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker9:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker10:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker11:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker12:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker13:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker14:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  adhoc_worker15:
+    <<: *redash-service
+    command: worker
+    depends_on:
+      - server
+    mem_limit: 7516192768
+  nginx:
+    image: nginx:latest
+    volumes:
+      - /opt/redash/nginx/nginx.conf:/etc/nginx/conf.d/default.conf
+      - /etc/certs:/etc/certs
     ports:
-      - "15432:5432"
-    command: "postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=OFF"
-    restart: unless-stopped
-    environment:
-      POSTGRES_HOST_AUTH_METHOD: "trust"
-  email:
-    image: djfarrelly/maildev
-    ports:
-      - "1080:80"
-    restart: unless-stopped
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - server
+    links:
+      - server:redash

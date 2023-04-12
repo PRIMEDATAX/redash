@@ -70,18 +70,19 @@ export default function QueryExecutionMetadata({
         {queryResultData.metadata.data_scanned && (
           <span className="m-l-5">
             Data Scanned:
-            <strong>{prettySize(queryResultData.metadata.data_scanned)}</strong>
+            <strong> {prettySize(queryResultData.metadata.data_scanned)} </strong>
           </span>
         )}
-        {queryResultData.metadata.slots_used && (
-          <span className="m-l-5">
-            Slots used:
-            <strong>{formatNumber(queryResultData.metadata.slots_used)}</strong>
-          </span>
-        )}
+
       </span>
       <div>
         <span className="m-r-10">
+                  {queryResultData.metadata.slots_used && (
+                    <span className="metadata-info m-l-5">
+            Slots used:
+            <strong> {formatNumber(queryResultData.metadata.slots_used)} </strong>
+          </span>
+                  )}
           <span className="hidden-xs">Refreshed </span>
           <strong>
             <TimeAgo date={queryResultData.retrievedAt} placeholder="-"/>
