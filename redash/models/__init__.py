@@ -51,7 +51,7 @@ from .types import (
     MutableDict,
     MutableList,
     PseudoJSON,
-    pseudo_json_cast_property
+    pseudo_json_cast_property, Configuration
 )
 from .users import AccessPermission, AnonymousUser, ApiUser, Group, User  # noqa
 
@@ -1423,14 +1423,7 @@ class NotificationDestination(BelongsToOrgMixin, db.Model):
     user = db.relationship(User, backref="notification_destinations")
     name = Column(db.String(255))
     type = Column(db.String(255))
-    options = Column(
-        "encrypted_options",
-        ConfigurationContainer.as_mutable(
-            EncryptedConfiguration(
-                db.Text, settings.DATASOURCE_SECRET_KEY, FernetEngine
-            )
-        ),
-    )
+    options = Column(ConfigurationContainer.as_mutable(Configuration))
     created_at = Column(db.DateTime(True), default=db.func.now())
 
     __tablename__ = "notification_destinations"
